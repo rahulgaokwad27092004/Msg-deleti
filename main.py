@@ -255,7 +255,26 @@ async def resetwarn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     warnings[chat_id][user_id] = 0
     await update.message.reply_text("✅ Warnings reset.")
-    
+
+# 🚫 Delete edited messages from non-admins
+async def delete_edited_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    edited_msg = update.edited_message
+    if not edited_msg:
+        return
+
+    try:
+        user_id = edited_msg.from_user.id
+        chat_id = edited_msg.chat_id
+
+        member = await context.bot.get_chat_member(chat_id, user_id)
+        if member.status in ("administrator", "creator"):
+            return  # Admins can edit freely
+
+        await context.bot.delete_message(chat_id=chat_id, message_id=edited_msg.message_id)
+
+    except Exception as e:
+        print(f"Error deleting edited message: {e}")
+            
 # 📌 Handlers
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("help", help_command))
@@ -278,7 +297,8 @@ app.add_handler(CommandHandler("tempmute", tempmute))
 app.add_handler(CommandHandler("tempban", tempban))
 app.add_handler(CommandHandler("warn", warn))
 app.add_handler(CommandHandler("resetwarn", resetwarn))
-
+app.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE, delete_edited_message))
+        
 # 🌐 Webhook mode
 app.run_webhook(
     listen="0.0.0.0",
