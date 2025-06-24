@@ -187,6 +187,75 @@ async def goodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 🚀 Start app
 app = ApplicationBuilder().token(TOKEN).build()
 
+# ⏳ Parse time like '10s', '5m', '1h', '2d'
+def parse_time(time_str: str) -> int:
+    unit = time_str[-1]
+    value = int(time_str[:-1])
+    return value * {"s": 1, "m": 60, "h": 3600, "d": 86400}.get(unit, 60)
+
+# 🧱 Temporary Mute
+async def tempmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_admin(update, context): return
+    if not update.message.reply_to_message:
+        return await update.message.reply_text("⚠️ Reply to a user to tempmute.")
+    try:
+        duration = parse_time(context.args[0])
+        user_id = update.message.reply_to_message.from_user.id
+        await context.bot.restrict_chat_member(
+            update.effective_chat.id, user_id,
+            permissions=ChatPermissions(can_send_messages=False),
+            until_date=datetime.utcnow() + timedelta(seconds=duration)
+        )
+        await update.message.reply_text(f"🔇 Muted for {context.args[0]}")
+    except:
+        await update.message.reply_text("⚠️ Usage: /tempmute <duration> (e.g., 5m, 1h)")
+
+# 🚷 Temporary Ban
+async def tempban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_admin(update, context): return
+    if not update.message.reply_to_message:
+        return await update.message.reply_text("⚠️ Reply to a user to tempban.")
+    try:
+        duration = parse_time(context.args[0])
+        user_id = update.message.reply_to_message.from_user.id
+        await context.bot.ban_chat_member(
+            update.effective_chat.id, user_id,
+            until_date=datetime.utcnow() + timedelta(seconds=duration)
+        )
+        await update.message.reply_text(f"🔨 Banned for {context.args[0]}")
+    except:
+        await update.message.reply_text("⚠️ Usage: /tempban <duration> (e.g., 10m, 2h)")
+
+# ⚠️ User Warnings
+warnings = defaultdict(lambda: defaultdict(int))  # chat_id -> user_id -> warn_count
+
+async def warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_admin(update, context): return
+    if not update.message.reply_to_message:
+        return await update.message.reply_text("⚠️ Reply to a user to warn.")
+    user_id = update.message.reply_to_message.from_user.id
+    chat_id = update.effective_chat.id
+    warnings[chat_id][user_id] += 1
+    count = warnings[chat_id][user_id]
+    await update.message.reply_text(f"⚠️ User warned ({count}/3)")
+    if count >= 3:
+        await context.bot.restrict_chat_member(
+            chat_id, user_id,
+            permissions=ChatPermissions(can_send_messages=False),
+            until_date=datetime.utcnow() + timedelta(minutes=10)
+        )
+        warnings[chat_id][user_id] = 0
+        await update.message.reply_text("🚫 User muted for 10 mins due to 3 warnings.")
+
+async def resetwarn(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_admin(update, context): return
+    if not update.message.reply_to_message:
+        return await update.message.reply_text("⚠️ Reply to a user to reset warnings.")
+    user_id = update.message.reply_to_message.from_user.id
+    chat_id = update.effective_chat.id
+    warnings[chat_id][user_id] = 0
+    await update.message.reply_text("✅ Warnings reset.")
+    
 # 📌 Handlers
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("help", help_command))
@@ -205,6 +274,10 @@ app.add_handler(CommandHandler("unmute", unmute))
 app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome))
 app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, goodbye))
 app.add_handler(MessageHandler(filters.ALL, handle_message))
+app.add_handler(CommandHandler("tempmute", tempmute))
+app.add_handler(CommandHandler("tempban", tempban))
+app.add_handler(CommandHandler("warn", warn))
+app.add_handler(CommandHandler("resetwarn", resetwarn))
 
 # 🌐 Webhook mode
 app.run_webhook(
