@@ -10,7 +10,7 @@ from telegram.ext import (
 from aiohttp import web
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
+BOT_TOKEN = os.environ.get("7698290595:AAHO-M-q2_D3wMUYDprq00jaZ_Gk1CG2ZqM")
 WEBHOOK_URL = "https://auto-delete.koyeb.app"
 PORT = int(os.environ.get("PORT", 8080))
 
