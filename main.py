@@ -12,10 +12,10 @@ from telegram.ext import (
 )
 from telegram.error import TelegramError
 
-# ✅ Bot token & Webhook URL (filled in)
+# ✅ Bot token & Webhook URL
 TOKEN = "7698290595:AAHO-M-q2_D3wMUYDprq00jaZ_Gk1CG2ZqM"
 WEBHOOK_URL = "https://msg-deleti.koyeb.app"
-PORT = 8080  # Default Koyeb port
+PORT = 8080  # For Koyeb
 
 # 🛠 Settings
 delete_delays = {}
@@ -26,6 +26,7 @@ msg_logs = defaultdict(lambda: deque(maxlen=10))
 MAX_MSG = 5
 WINDOW = 5
 
+# 🔐 Admin check
 async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     try:
         member: ChatMember = await context.bot.get_chat_member(update.effective_chat.id, update.effective_user.id)
@@ -33,7 +34,7 @@ async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     except TelegramError:
         return False
 
-# Commands
+# 📜 Command Handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("👋 Welcome! Use /help to view commands.")
 
@@ -91,7 +92,7 @@ async def antiflood_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status = "ON" if flood_enabled[update.effective_chat.id] else "OFF"
     await update.message.reply_text(f"🛡️ Anti-flood is {status}.")
 
-# Message handler
+# ✂️ Message Handler
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
     chat_id = msg.chat_id
@@ -110,11 +111,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.delete()
         return
 
-    # NSFW detection
+    # NSFW text check
     if msg.text and any(word in msg.text.lower() for word in NSFW_KEYWORDS):
         await msg.delete()
         return
 
+    # NSFW media check
     if msg.photo or msg.video or msg.sticker or msg.animation or msg.document:
         await msg.delete()
         return
@@ -128,9 +130,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
 
-# Bot run
+# 👋 Welcome & Goodbye
+async def welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    for user in update.message.new_chat_members:
+        await update.message.reply_text(f"👋 Welcome {user.mention_html()} to the group!", parse_mode='HTML')
+
+async def goodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    left_user = update.message.left_chat_member
+    if left_user:
+        await update.message.reply_text(f"👋 {left_user.full_name} has left the group.")
+
+# 🔁 App Builder
 app = ApplicationBuilder().token(TOKEN).build()
 
+# 📌 Command Handlers
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("help", help_command))
 app.add_handler(CommandHandler("settimer", settimer))
@@ -141,11 +154,16 @@ app.add_handler(CommandHandler("info", info))
 app.add_handler(CommandHandler("antiflood_on", antiflood_on))
 app.add_handler(CommandHandler("antiflood_off", antiflood_off))
 app.add_handler(CommandHandler("antiflood", antiflood_status))
-app.add_handler(MessageHandler(filters.ALL, handle_message))
 
+# 📩 Message Handlers
+app.add_handler(MessageHandler(filters.ALL, handle_message))
+app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome))
+app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, goodbye))
+
+# 🚀 Webhook
 app.run_webhook(
     listen="0.0.0.0",
     port=PORT,
     webhook_url=WEBHOOK_URL
-                  )
-    
+        )
+        
