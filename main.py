@@ -9,21 +9,18 @@ import logging
 import os
 import asyncio
 
-# ✅ Get BOT_TOKEN from environment variables
 BOT_TOKEN = os.environ.get("7698290595:AAHO-M-q2_D3wMUYDprq00jaZ_Gk1CG2ZqM")
-
-# ✅ Default port and webhook URL
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://your-koyeb-app.koyeb.app")
 PORT = int(os.environ.get("PORT", 8080))
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://your-koyeb-app.koyeb.app")  # Replace this on Koyeb if needed
 
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN is missing. Please set it as an environment variable.")
+
+logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 chat_delete_times = {}
 scheduler = AsyncIOScheduler()
 scheduler.start()
 
-# ✅ Enable logging
-logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
-
-# ✅ Command to set message auto-delete time
 async def set_delete_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) != 1 or not context.args[0].isdigit():
         await update.message.reply_text("Usage: /setdeletetime <seconds>")
@@ -33,7 +30,6 @@ async def set_delete_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_delete_times[chat_id] = seconds
     await update.message.reply_text(f"Messages will now be deleted after {seconds} seconds.")
 
-# ✅ Message handler to schedule deletion
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     chat_id = message.chat_id
@@ -53,24 +49,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         replace_existing=True
     )
 
-# ✅ Function to delete a message
 async def delete_message(app, chat_id, message_id):
     try:
         await app.bot.delete_message(chat_id=chat_id, message_id=message_id)
     except Exception as e:
         print(f"Error deleting message: {e}")
 
-# ✅ Main async entry point
 async def main():
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("setdeletetime", set_delete_time))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
 
-    # ✅ Set webhook
     await app.bot.set_webhook(url=f"{WEBHOOK_URL}/webhook")
 
-    # ✅ AIOHTTP server for webhook
     async def handler(request):
         data = await request.json()
         await app.update_queue.put(Update.de_json(data, app.bot))
@@ -84,11 +76,9 @@ async def main():
     await site.start()
 
     print(f"Bot running via webhook at {WEBHOOK_URL}/webhook")
-
     while True:
         await asyncio.sleep(3600)
 
-# ✅ Run it
 if __name__ == "__main__":
     asyncio.run(main())
     
