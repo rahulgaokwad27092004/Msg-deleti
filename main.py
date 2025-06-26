@@ -1,4 +1,6 @@
 import asyncio
+import signal
+import nest_asyncio
 from datetime import datetime, timedelta
 from collections import defaultdict, deque
 
@@ -25,6 +27,7 @@ flood_enabled = defaultdict(lambda: False)
 msg_logs = defaultdict(lambda: deque(maxlen=10))
 MAX_MSG = 5
 WINDOW = 5
+warnings = defaultdict(lambda: defaultdict(int))  # chat_id -> user_id -> warn_count
 
 # 🔐 Admin check
 async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -33,6 +36,12 @@ async def is_admin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
         return member.status in ("administrator", "creator")
     except TelegramError:
         return False
+
+# 🧱 Time parser
+def parse_time(time_str: str) -> int:
+    unit = time_str[-1]
+    value = int(time_str[:-1])
+    return value * {"s": 1, "m": 60, "h": 3600, "d": 86400}.get(unit, 60)
 
 # 📜 Commands
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -43,7 +52,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🛠 Commands:\n"
         "/start\n/help\n/settimer <sec>\n/off\n/status\n/onlyadminon\n/info\n"
         "/antiflood_on\n/antiflood_off\n/antiflood\n"
-        "/ban (reply)\n/kick (reply)\n/mute (reply)\n/unmute (reply)"
+        "/ban (reply)\n/kick (reply)\n/mute (reply)\n/unmute (reply)\n"
+        "/tempmute <duration>\n/tempban <duration>\n/warn\n/resetwarn"
     )
 
 async def settimer(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -78,43 +88,24 @@ async def info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat = update.effective_chat
     await update.message.reply_text(f"ℹ️ Group: {chat.title}\nID: {chat.id}\nType: {chat.type}")
 
-async def antiflood_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin(update, context): return
-    flood_enabled[update.effective_chat.id] = True
-    await update.message.reply_text("🛡️ Anti-flood enabled.")
-
-async def antiflood_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin(update, context): return
-    flood_enabled[update.effective_chat.id] = False
-    await update.message.reply_text("🚫 Anti-flood disabled.")
-
-async def antiflood_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin(update, context): return
-    status = "ON" if flood_enabled[update.effective_chat.id] else "OFF"
-    await update.message.reply_text(f"🛡️ Anti-flood is {status}.")
-
-# 👮 Admin moderation commands
+# 👮 Moderation Commands
 async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin(update, context): return await update.message.reply_text("🚫 Admin only.")
+    if not await is_admin(update, context): return
     user = update.message.reply_to_message.from_user if update.message.reply_to_message else None
     if user:
         await context.bot.ban_chat_member(update.effective_chat.id, user.id)
         await update.message.reply_text(f"🔨 Banned {user.full_name}")
-    else:
-        await update.message.reply_text("⚠️ Reply to a user to ban.")
 
 async def kick(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin(update, context): return await update.message.reply_text("🚫 Admin only.")
+    if not await is_admin(update, context): return
     user = update.message.reply_to_message.from_user if update.message.reply_to_message else None
     if user:
         await context.bot.ban_chat_member(update.effective_chat.id, user.id)
         await context.bot.unban_chat_member(update.effective_chat.id, user.id)
         await update.message.reply_text(f"👢 Kicked {user.full_name}")
-    else:
-        await update.message.reply_text("⚠️ Reply to a user to kick.")
 
 async def mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin(update, context): return await update.message.reply_text("🚫 Admin only.")
+    if not await is_admin(update, context): return
     user = update.message.reply_to_message.from_user if update.message.reply_to_message else None
     if user:
         await context.bot.restrict_chat_member(
@@ -122,11 +113,9 @@ async def mute(update: Update, context: ContextTypes.DEFAULT_TYPE):
             permissions=ChatPermissions(can_send_messages=False)
         )
         await update.message.reply_text(f"🔇 Muted {user.full_name}")
-    else:
-        await update.message.reply_text("⚠️ Reply to a user to mute.")
 
 async def unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await is_admin(update, context): return await update.message.reply_text("🚫 Admin only.")
+    if not await is_admin(update, context): return
     user = update.message.reply_to_message.from_user if update.message.reply_to_message else None
     if user:
         await context.bot.restrict_chat_member(
@@ -134,147 +123,108 @@ async def unmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
             permissions=ChatPermissions(can_send_messages=True)
         )
         await update.message.reply_text(f"🔊 Unmuted {user.full_name}")
-    else:
-        await update.message.reply_text("⚠️ Reply to a user to unmute.")
 
-# ✂️ Message handler
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message
-    chat_id = msg.chat_id
-    user_id = msg.from_user.id
-
-    # Anti-flood
-    if flood_enabled[chat_id]:
-        now = datetime.utcnow()
-        msg_logs[(chat_id, user_id)].append(now)
-        if len([t for t in msg_logs[(chat_id, user_id)] if now - t < timedelta(seconds=WINDOW)]) > MAX_MSG:
-            await msg.delete()
-            return
-
-    # Admin-only mode
-    if admin_only_mode.get(chat_id) and not await is_admin(update, context):
-        await msg.delete()
-        return
-
-    # NSFW detection
-    if msg.text and any(word in msg.text.lower() for word in NSFW_KEYWORDS):
-        await msg.delete()
-        return
-
-    if msg.photo or msg.video or msg.sticker or msg.animation or msg.document:
-        await msg.delete()
-        return
-
-    # Auto-delete
-    delay = delete_delays.get(chat_id)
-    if delay:
-        await asyncio.sleep(delay)
-        try:
-            await context.bot.delete_message(chat_id, msg.message_id)
-        except:
-            pass
-
-# 👋 Welcome & Goodbye
-async def welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    for user in update.message.new_chat_members:
-        await update.message.reply_text(f"👋 Welcome {user.mention_html()} to the group!", parse_mode='HTML')
-
-async def goodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    left_user = update.message.left_chat_member
-    if left_user:
-        await update.message.reply_text(f"👋 {left_user.full_name} has left the group.")
-
-# 🚀 Start app
-app = ApplicationBuilder().token(TOKEN).build()
-
-# ⏳ Parse time like '10s', '5m', '1h', '2d'
-def parse_time(time_str: str) -> int:
-    unit = time_str[-1]
-    value = int(time_str[:-1])
-    return value * {"s": 1, "m": 60, "h": 3600, "d": 86400}.get(unit, 60)
-
-# 🧱 Temporary Mute
 async def tempmute(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context): return
-    if not update.message.reply_to_message:
-        return await update.message.reply_text("⚠️ Reply to a user to tempmute.")
     try:
         duration = parse_time(context.args[0])
-        user_id = update.message.reply_to_message.from_user.id
+        user = update.message.reply_to_message.from_user
         await context.bot.restrict_chat_member(
-            update.effective_chat.id, user_id,
+            update.effective_chat.id, user.id,
             permissions=ChatPermissions(can_send_messages=False),
             until_date=datetime.utcnow() + timedelta(seconds=duration)
         )
         await update.message.reply_text(f"🔇 Muted for {context.args[0]}")
     except:
-        await update.message.reply_text("⚠️ Usage: /tempmute <duration> (e.g., 5m, 1h)")
+        await update.message.reply_text("⚠️ Usage: /tempmute <5m/1h>")
 
-# 🚷 Temporary Ban
 async def tempban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context): return
-    if not update.message.reply_to_message:
-        return await update.message.reply_text("⚠️ Reply to a user to tempban.")
     try:
         duration = parse_time(context.args[0])
-        user_id = update.message.reply_to_message.from_user.id
+        user = update.message.reply_to_message.from_user
         await context.bot.ban_chat_member(
-            update.effective_chat.id, user_id,
+            update.effective_chat.id, user.id,
             until_date=datetime.utcnow() + timedelta(seconds=duration)
         )
         await update.message.reply_text(f"🔨 Banned for {context.args[0]}")
     except:
-        await update.message.reply_text("⚠️ Usage: /tempban <duration> (e.g., 10m, 2h)")
-
-# ⚠️ User Warnings
-warnings = defaultdict(lambda: defaultdict(int))  # chat_id -> user_id -> warn_count
+        await update.message.reply_text("⚠️ Usage: /tempban <5m/1h>")
 
 async def warn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context): return
-    if not update.message.reply_to_message:
-        return await update.message.reply_text("⚠️ Reply to a user to warn.")
-    user_id = update.message.reply_to_message.from_user.id
-    chat_id = update.effective_chat.id
-    warnings[chat_id][user_id] += 1
-    count = warnings[chat_id][user_id]
-    await update.message.reply_text(f"⚠️ User warned ({count}/3)")
+    user = update.message.reply_to_message.from_user
+    cid, uid = update.effective_chat.id, user.id
+    warnings[cid][uid] += 1
+    count = warnings[cid][uid]
+    await update.message.reply_text(f"⚠️ Warning ({count}/3)")
     if count >= 3:
         await context.bot.restrict_chat_member(
-            chat_id, user_id,
+            cid, uid,
             permissions=ChatPermissions(can_send_messages=False),
             until_date=datetime.utcnow() + timedelta(minutes=10)
         )
-        warnings[chat_id][user_id] = 0
-        await update.message.reply_text("🚫 User muted for 10 mins due to 3 warnings.")
+        warnings[cid][uid] = 0
+        await update.message.reply_text("🚫 Muted 10 mins after 3 warnings")
 
 async def resetwarn(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_admin(update, context): return
-    if not update.message.reply_to_message:
-        return await update.message.reply_text("⚠️ Reply to a user to reset warnings.")
-    user_id = update.message.reply_to_message.from_user.id
-    chat_id = update.effective_chat.id
-    warnings[chat_id][user_id] = 0
-    await update.message.reply_text("✅ Warnings reset.")
+    user = update.message.reply_to_message.from_user
+    warnings[update.effective_chat.id][user.id] = 0
+    await update.message.reply_text("✅ Warnings reset")
 
-# 🚫 Delete edited messages from non-admins
+# ✂️ Auto-delete and filters
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message
+    chat_id, user_id = msg.chat_id, msg.from_user.id
+    now = datetime.utcnow()
+
+    if flood_enabled[chat_id]:
+        msg_logs[(chat_id, user_id)].append(now)
+        recent = [t for t in msg_logs[(chat_id, user_id)] if now - t < timedelta(seconds=WINDOW)]
+        if len(recent) > MAX_MSG:
+            await msg.delete()
+            return
+
+    if admin_only_mode.get(chat_id) and not await is_admin(update, context):
+        await msg.delete(); return
+
+    if msg.text and any(word in msg.text.lower() for word in NSFW_KEYWORDS):
+        await msg.delete(); return
+
+    if msg.photo or msg.video or msg.sticker or msg.animation or msg.document:
+        await msg.delete(); return
+
+    delay = delete_delays.get(chat_id)
+    if delay:
+        await asyncio.sleep(delay)
+        try:
+            await context.bot.delete_message(chat_id, msg.message_id)
+        except: pass
+
+# 🧍 Welcome / Goodbye
+async def welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    for user in update.message.new_chat_members:
+        await update.message.reply_text(f"👋 Welcome {user.mention_html()}!", parse_mode='HTML')
+
+async def goodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.message.left_chat_member
+    if user:
+        await update.message.reply_text(f"👋 {user.full_name} left.")
+
+# ✏️ Delete edited messages (non-admins)
 async def delete_edited_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     edited_msg = update.edited_message
-    if not edited_msg:
-        return
-
+    if not edited_msg: return
     try:
-        user_id = edited_msg.from_user.id
-        chat_id = edited_msg.chat_id
+        member = await context.bot.get_chat_member(edited_msg.chat_id, edited_msg.from_user.id)
+        if member.status in ("administrator", "creator"): return
+        await context.bot.delete_message(chat_id=edited_msg.chat_id, message_id=edited_msg.message_id)
+    except: pass
 
-        member = await context.bot.get_chat_member(chat_id, user_id)
-        if member.status in ("administrator", "creator"):
-            return  # Admins can edit freely
+# 🚀 App Setup
+app = ApplicationBuilder().token(TOKEN).build()
 
-        await context.bot.delete_message(chat_id=chat_id, message_id=edited_msg.message_id)
-
-    except Exception as e:
-        print(f"Error deleting edited message: {e}")
-            
 # 📌 Handlers
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CommandHandler("help", help_command))
@@ -283,26 +233,47 @@ app.add_handler(CommandHandler("off", turn_off))
 app.add_handler(CommandHandler("status", status))
 app.add_handler(CommandHandler("onlyadminon", onlyadminon))
 app.add_handler(CommandHandler("info", info))
-app.add_handler(CommandHandler("antiflood_on", antiflood_on))
-app.add_handler(CommandHandler("antiflood_off", antiflood_off))
-app.add_handler(CommandHandler("antiflood", antiflood_status))
 app.add_handler(CommandHandler("ban", ban))
 app.add_handler(CommandHandler("kick", kick))
 app.add_handler(CommandHandler("mute", mute))
 app.add_handler(CommandHandler("unmute", unmute))
-app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome))
-app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, goodbye))
-app.add_handler(MessageHandler(filters.ALL, handle_message))
 app.add_handler(CommandHandler("tempmute", tempmute))
 app.add_handler(CommandHandler("tempban", tempban))
 app.add_handler(CommandHandler("warn", warn))
 app.add_handler(CommandHandler("resetwarn", resetwarn))
+app.add_handler(MessageHandler(filters.ALL, handle_message))
+app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome))
+app.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, goodbye))
 app.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE, delete_edited_message))
-        
-# 🌐 Webhook mode
-app.run_webhook(
-    listen="0.0.0.0",
-    port=PORT,
-    webhook_url=WEBHOOK_URL
+
+# 🌐 Webhook with graceful shutdown
+nest_asyncio.apply()
+loop = asyncio.get_event_loop()
+
+def _shutdown_signal():
+    print("⚠️ Gracefully shutting down...")
+    loop.stop()
+
+signal.signal(signal.SIGINT, lambda s, f: _shutdown_signal())
+signal.signal(signal.SIGTERM, lambda s, f: _shutdown_signal())
+
+async def main():
+    await app.initialize()
+    await app.start()
+    await app.updater.start_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        webhook_url=WEBHOOK_URL
     )
+    print("🚀 Bot is live")
+
+    try:
+        await asyncio.Future()
+    finally:
+        await app.updater.stop()
+        await app.stop()
+        await app.shutdown()
+        print("🛑 Bot shutdown complete")
+
+loop.run_until_complete(main())
     
